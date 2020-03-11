@@ -25,7 +25,9 @@ import mozilla.components.support.webextensions.WebExtensionController
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
-import java.lang.ClassCastException
+import java.io.BufferedWriter
+import java.io.File
+import java.io.FileWriter
 
 /**
  * Configurable FxA capabilities.
@@ -58,7 +60,76 @@ class FxaWebChannelFeature(
 
     @VisibleForTesting
     // This is an internal var to make it mutable for unit testing purposes only
-    internal var extensionController = WebExtensionController(WEB_CHANNEL_EXTENSION_ID, WEB_CHANNEL_EXTENSION_URL)
+    internal lateinit var extensionController: WebExtensionController
+
+    init {
+        generateExtension()
+    }
+
+    // TODO: This procedure should be run on IO thread.
+    private fun generateExtension() {
+        val webExtDir = File(context.cacheDir, "fxawebext")
+        if (!webExtDir.exists()) {
+            webExtDir.mkdir()
+        }
+        val jsFile = File(webExtDir, "fxawebchannel.js")
+        var writer: BufferedWriter = BufferedWriter(FileWriter(jsFile))
+        // TODO: these should be in template files.
+        writer.write("/* This Source Code Form is subject to the terms of the Mozilla Public\n" +
+            " * License, v. 2.0. If a copy of the MPL was not distributed with this file,\n" +
+            " * You can obtain one at http://mozilla.org/MPL/2.0/. */\n" +
+            "\n" +
+            "/*\n" +
+            "Establish communication with native application.\n" +
+            "*/\n" +
+            "let port = browser.runtime.connectNative(\"mozacWebchannel\");\n" +
+            "\n" +
+            "/*\n" +
+            "Handle messages from native application, dispatch them to FxA via an event.\n" +
+            "*/\n" +
+            "port.onMessage.addListener((event) => {\n" +
+            "  window.dispatchEvent(new CustomEvent('WebChannelMessageToContent', {\n" +
+            "    detail: JSON.stringify(event)\n" +
+            "  }));\n" +
+            "});\n" +
+            "\n" +
+            "// We should use pagehide/pageshow events instead, to better handle page navigation events.\n" +
+            "// See https://github.com/mozilla-mobile/android-components/issues/2984.\n" +
+            "window.addEventListener(\"unload\", (event) => { port.disconnect() }, false);\n" +
+            "\n" +
+            "/*\n" +
+            "Handle messages from FxA. Messages are posted to the native application for processing.\n" +
+            "*/\n" +
+            "window.addEventListener('WebChannelMessageToChrome', function (e) {\n" +
+            "  const detail = JSON.parse(e.detail);\n" +
+            "  port.postMessage(detail);\n" +
+            "});")
+        writer.close()
+
+        val manifestFile = File(webExtDir, "manifest.json")
+        writer = BufferedWriter(FileWriter(manifestFile))
+        writer.write("{\n" +
+            "  \"manifest_version\": 2,\n" +
+            "  \"name\": \"Mozilla Android Components - Firefox Accounts WebChannel\",\n" +
+            "  \"version\": \"1.0\",\n" +
+            "  \"content_scripts\": [\n" +
+            "    {\n" +
+            "      \"matches\": [\"https://accounts.firefox.com/*\"],\n" +
+            "      \"js\": [\"fxawebchannel.js\"],\n" +
+            "      \"run_at\": \"document_start\"\n" +
+            "    }\n" +
+            "  ],\n" +
+            "  \"permissions\": [\n" +
+            "    \"mozillaAddons\",\n" +
+            "    \"geckoViewAddons\",\n" +
+            "    \"nativeMessaging\"\n" +
+            "  ]\n" +
+            "}\n")
+        writer.close()
+
+        val extDirPath = "file://" + webExtDir.absolutePath + "/" // Needs to finish with a "/"
+        extensionController = WebExtensionController(WEB_CHANNEL_EXTENSION_ID, extDirPath)
+    }
 
     override fun start() {
         // Runs observeSelected (if we're not in a custom tab) or observeFixed (if we are).
